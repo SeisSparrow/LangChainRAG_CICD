@@ -1,22 +1,20 @@
 import os
 import json
 import boto3
+import numpy as np
+from typing import List, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.chat_models import ChatOpenAI
-from langchain.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain.schema import Document
+from openai import OpenAI
 import uvicorn
 
-app = FastAPI(title="LangChain RAG Demo", version="1.0.0")
+app = FastAPI(title="Simple RAG Demo", version="2.0.0")
 
-# Global variables to hold our RAG components
-vector_store = None
-qa_chain = None
+# Global variables
+client = None
+documents = []
+embeddings_cache = {}
 initialization_error = None
 
 # Get OpenAI API key from AWS Secrets Manager or environment
@@ -33,12 +31,12 @@ def get_openai_api_key():
         region_name = "us-east-1"
 
         session = boto3.session.Session()
-        client = session.client(
+        secrets_client = session.client(
             service_name='secretsmanager',
             region_name=region_name
         )
 
-        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        get_secret_value_response = secrets_client.get_secret_value(SecretId=secret_name)
         secret = get_secret_value_response['SecretString']
         return secret
     except Exception as e:
@@ -50,38 +48,42 @@ SAMPLE_DOCUMENTS = [
     {
         "content": "LangChain is a framework for developing applications powered by language models. "
                    "It enables applications that are context-aware and can reason about how to answer based on provided context.",
-        "metadata": {"source": "langchain_intro", "topic": "framework"}
+        "id": "doc1"
     },
     {
         "content": "Retrieval-Augmented Generation (RAG) is a technique that combines information retrieval "
                    "with text generation. It retrieves relevant documents and uses them as context for generating responses.",
-        "metadata": {"source": "rag_intro", "topic": "technique"}
+        "id": "doc2"
     },
     {
         "content": "Vector databases store embeddings of text documents, allowing for semantic search. "
                    "FAISS is a popular library for efficient similarity search and clustering of dense vectors.",
-        "metadata": {"source": "vector_db_intro", "topic": "database"}
+        "id": "doc3"
     },
     {
         "content": "OpenAI provides powerful language models like GPT-4 and GPT-3.5-turbo. "
                    "These models can understand and generate human-like text for various applications.",
-        "metadata": {"source": "openai_intro", "topic": "ai_models"}
+        "id": "doc4"
     },
     {
         "content": "AWS App Runner is a fully managed service that makes it easy to deploy containerized web applications. "
                    "It automatically builds and deploys your application and provides load balancing and auto-scaling.",
-        "metadata": {"source": "aws_intro", "topic": "cloud"}
+        "id": "doc5"
     },
     {
         "content": "CI/CD stands for Continuous Integration and Continuous Deployment. "
                    "GitHub Actions allows you to automate your software workflows with OIDC for secure authentication.",
-        "metadata": {"source": "cicd_intro", "topic": "devops"}
+        "id": "doc6"
     }
 ]
 
+def cosine_similarity(a, b):
+    """Calculate cosine similarity between two vectors"""
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
 def initialize_rag_system():
-    """Initialize the RAG system with vector store and QA chain"""
-    global vector_store, qa_chain, initialization_error
+    """Initialize the RAG system with OpenAI client and pre-compute embeddings"""
+    global client, documents, embeddings_cache, initialization_error
 
     try:
         # Get API key
@@ -89,47 +91,21 @@ def initialize_rag_system():
         if not api_key:
             raise ValueError("OpenAI API key not found")
 
-        os.environ["OPENAI_API_KEY"] = api_key
+        print("Initializing OpenAI client...")
+        client = OpenAI(api_key=api_key)
 
-        print("Creating embeddings...")
-        # Create embeddings - use default model for compatibility
-        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        print("Pre-computing document embeddings...")
+        documents = SAMPLE_DOCUMENTS.copy()
 
-        # Convert sample documents to LangChain documents
-        documents = [
-            Document(page_content=doc["content"], metadata=doc["metadata"])
-            for doc in SAMPLE_DOCUMENTS
-        ]
+        # Pre-compute embeddings for all documents
+        for doc in documents:
+            response = client.embeddings.create(
+                input=doc["content"],
+                model="text-embedding-ada-002"
+            )
+            embeddings_cache[doc["id"]] = response.data[0].embedding
 
-        # Split documents into chunks
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50
-        )
-        split_docs = text_splitter.split_documents(documents)
-
-        print(f"Creating vector store with {len(split_docs)} document chunks...")
-        # Create vector store
-        vector_store = FAISS.from_documents(split_docs, embeddings)
-
-        print("Creating LLM...")
-        # Create LLM with explicit API key
-        llm = ChatOpenAI(
-            model="gpt-3.5-turbo",
-            temperature=0,
-            openai_api_key=api_key
-        )
-
-        print("Creating QA chain...")
-        # Create QA chain
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
-            return_source_documents=True
-        )
-
-        print("RAG system initialized successfully!")
+        print(f"RAG system initialized successfully with {len(documents)} documents!")
         initialization_error = None
         return True
 
@@ -141,6 +117,64 @@ def initialize_rag_system():
         initialization_error = error_msg
         return False
 
+def find_relevant_documents(query: str, top_k: int = 3) -> List[Dict]:
+    """Find most relevant documents for a query using embeddings"""
+    try:
+        # Get query embedding
+        response = client.embeddings.create(
+            input=query,
+            model="text-embedding-ada-002"
+        )
+        query_embedding = response.data[0].embedding
+
+        # Calculate similarities
+        similarities = []
+        for doc in documents:
+            doc_embedding = embeddings_cache[doc["id"]]
+            similarity = cosine_similarity(query_embedding, doc_embedding)
+            similarities.append((doc, similarity))
+
+        # Sort by similarity and return top k
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, _ in similarities[:top_k]]
+
+    except Exception as e:
+        print(f"Error finding relevant documents: {e}")
+        return []
+
+def generate_answer(question: str, context_docs: List[Dict]) -> str:
+    """Generate an answer using GPT with context"""
+    try:
+        # Build context from documents
+        context = "\n\n".join([f"Document {i+1}: {doc['content']}"
+                               for i, doc in enumerate(context_docs)])
+
+        # Create prompt
+        prompt = f"""Answer the following question based on the provided context.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
+
+        # Call GPT
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that answers questions based on the provided context."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"Error generating answer: {e}")
+        raise
+
 # Request/Response models
 class QuestionRequest(BaseModel):
     question: str
@@ -148,7 +182,7 @@ class QuestionRequest(BaseModel):
 class AnswerResponse(BaseModel):
     question: str
     answer: str
-    sources: list
+    sources: List[Dict]
 
 @app.on_event("startup")
 async def startup_event():
@@ -161,11 +195,12 @@ async def startup_event():
 async def root():
     """Root endpoint with API information"""
     return {
-        "message": "LangChain RAG API",
-        "version": "1.0.0",
+        "message": "Simple RAG API (No LangChain)",
+        "version": "2.0.0",
         "endpoints": {
             "/health": "Health check",
             "/ask": "Ask a question (POST)",
+            "/documents": "List documents (GET)",
             "/docs": "API documentation"
         }
     }
@@ -173,8 +208,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint for App Runner"""
-    if qa_chain is None:
-        # Check if API key is available
+    if client is None:
         api_key = os.getenv("OPENAI_API_KEY")
         has_key = api_key is not None and len(api_key) > 0
         return JSONResponse(
@@ -187,53 +221,36 @@ async def health_check():
                 "error": initialization_error
             }
         )
-    return {"status": "healthy", "rag_initialized": True}
-
-@app.get("/debug/env")
-async def debug_env():
-    """Debug endpoint to check environment variables"""
-    api_key = os.getenv("OPENAI_API_KEY")
     return {
-        "has_openai_key": api_key is not None,
-        "key_length": len(api_key) if api_key else 0,
-        "key_prefix": api_key[:15] + "..." if api_key else None,
-        "all_env_vars": list(os.environ.keys())
+        "status": "healthy",
+        "rag_initialized": True,
+        "documents_count": len(documents)
     }
 
 @app.post("/ask", response_model=AnswerResponse)
 async def ask_question(request: QuestionRequest):
-    """
-    Ask a question and get an answer using RAG
-
-    Example:
-    ```json
-    {
-        "question": "What is LangChain?"
-    }
-    ```
-    """
-    if qa_chain is None:
+    """Ask a question and get an answer using RAG"""
+    if client is None:
         raise HTTPException(
             status_code=503,
             detail="RAG system not initialized. Check OpenAI API key configuration."
         )
 
     try:
-        result = qa_chain.invoke({"query": request.question})
+        # Find relevant documents
+        relevant_docs = find_relevant_documents(request.question)
 
-        # Extract source information
-        sources = []
-        if "source_documents" in result:
-            for doc in result["source_documents"]:
-                sources.append({
-                    "content": doc.page_content[:200] + "...",
-                    "metadata": doc.metadata
-                })
+        if not relevant_docs:
+            raise HTTPException(status_code=500, detail="Could not find relevant documents")
+
+        # Generate answer
+        answer = generate_answer(request.question, relevant_docs)
 
         return AnswerResponse(
             question=request.question,
-            answer=result["result"],
-            sources=sources
+            answer=answer,
+            sources=[{"content": doc["content"][:200] + "...", "id": doc["id"]}
+                    for doc in relevant_docs]
         )
 
     except Exception as e:
@@ -243,8 +260,8 @@ async def ask_question(request: QuestionRequest):
 async def list_documents():
     """List all documents in the knowledge base"""
     return {
-        "total_documents": len(SAMPLE_DOCUMENTS),
-        "documents": SAMPLE_DOCUMENTS
+        "total_documents": len(documents),
+        "documents": documents
     }
 
 if __name__ == "__main__":
