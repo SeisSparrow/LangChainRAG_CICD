@@ -1,0 +1,97 @@
+name: Deploy to AWS App Runner
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write   # Required for OIDC authentication
+  contents: read    # Required to check out code
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS Credentials using OIDC (No Access Keys!)
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: GitHubActions-Deploy
+
+      # Step 3: Login to Amazon ECR
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 4: Build, tag, and push Docker image to ECR
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build Docker image
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          # Push image to ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          # Output the image URI for next step
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # Step 5: Get App Runner role ARNs dynamically
+      - name: Get App Runner Role ARNs
+        id: get-roles
+        run: |
+          # Get the access role ARN (service role for pulling ECR images)
+          ACCESS_ROLE_ARN=$(aws iam get-role --role-name bee-edu-apprunner-role --query 'Role.Arn' --output text)
+          echo "access-role-arn=$ACCESS_ROLE_ARN" >> $GITHUB_OUTPUT
+
+          # Get the instance role ARN (runtime role for accessing secrets)
+          INSTANCE_ROLE_ARN=$(aws iam get-role --role-name bee-edu-apprunner-instance-role --query 'Role.Arn' --output text)
+          echo "instance-role-arn=$INSTANCE_ROLE_ARN" >> $GITHUB_OUTPUT
+
+          echo "Access Role ARN: $ACCESS_ROLE_ARN"
+          echo "Instance Role ARN: $INSTANCE_ROLE_ARN"
+
+      # Step 6: Deploy to App Runner
+      - name: Deploy to App Runner
+        id: deploy-apprunner
+        uses: awslabs/amazon-app-runner-deploy@main
+        with:
+          service: bee-edu-rag-service
+          image: ${{ steps.build-image.outputs.image }}
+          access-role-arn: ${{ steps.get-roles.outputs.access-role-arn }}
+          runtime: PYTHON_3
+          region: ${{ secrets.AWS_REGION }}
+          cpu: 1
+          memory: 2
+          port: 8080
+          wait-for-service-stability-seconds: 600
+          instance-role-arn: ${{ steps.get-roles.outputs.instance-role-arn }}
+          copy-env-vars: |
+            OPENAI_API_KEY
+          copy-secret-env-vars: |
+            - OPENAI_API_KEY=bee-edu-openai-key-secret
+
+      # Step 7: Output the service URL
+      - name: App Runner URL
+        run: |
+          echo "App Runner Service URL: ${{ steps.deploy-apprunner.outputs.service-url }}"
+          echo "Service ID: ${{ steps.deploy-apprunner.outputs.service-id }}"
+          echo "Deployment successful!"
