@@ -230,7 +230,6 @@ async def health_check():
                 "status": "unhealthy",
                 "message": "RAG system not initialized",
                 "has_api_key": has_key,
-                "api_key_prefix": api_key[:10] + "..." if api_key else None,
                 "error": initialization_error
             }
         )
