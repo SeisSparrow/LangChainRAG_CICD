@@ -92,11 +92,8 @@ def initialize_rag_system():
         os.environ["OPENAI_API_KEY"] = api_key
 
         print("Creating embeddings...")
-        # Create embeddings with explicit API key
-        embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            openai_api_key=api_key
-        )
+        # Create embeddings - use default model for compatibility
+        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
 
         # Convert sample documents to LangChain documents
         documents = [
