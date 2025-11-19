@@ -159,11 +159,30 @@ async def root():
 async def health_check():
     """Health check endpoint for App Runner"""
     if qa_chain is None:
+        # Check if API key is available
+        api_key = os.getenv("OPENAI_API_KEY")
+        has_key = api_key is not None and len(api_key) > 0
         return JSONResponse(
             status_code=503,
-            content={"status": "unhealthy", "message": "RAG system not initialized"}
+            content={
+                "status": "unhealthy",
+                "message": "RAG system not initialized",
+                "has_api_key": has_key,
+                "api_key_prefix": api_key[:10] + "..." if api_key else None
+            }
         )
     return {"status": "healthy", "rag_initialized": True}
+
+@app.get("/debug/env")
+async def debug_env():
+    """Debug endpoint to check environment variables"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    return {
+        "has_openai_key": api_key is not None,
+        "key_length": len(api_key) if api_key else 0,
+        "key_prefix": api_key[:15] + "..." if api_key else None,
+        "all_env_vars": list(os.environ.keys())
+    }
 
 @app.post("/ask", response_model=AnswerResponse)
 async def ask_question(request: QuestionRequest):
