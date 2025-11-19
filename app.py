@@ -92,7 +92,20 @@ def initialize_rag_system():
             raise ValueError("OpenAI API key not found")
 
         print("Initializing OpenAI client...")
-        client = OpenAI(api_key=api_key)
+        print(f"OpenAI SDK version: {OpenAI.__module__}")
+
+        # Try to create client with minimal parameters
+        try:
+            client = OpenAI(api_key=api_key)
+            print("OpenAI client created successfully")
+        except TypeError as te:
+            print(f"TypeError creating OpenAI client: {te}")
+            # Try without any parameters to see what happens
+            import sys
+            print(f"Python version: {sys.version}")
+            import openai
+            print(f"OpenAI package version: {openai.__version__}")
+            raise
 
         print("Pre-computing document embeddings...")
         documents = SAMPLE_DOCUMENTS.copy()
