@@ -91,8 +91,11 @@ def initialize_rag_system():
         os.environ["OPENAI_API_KEY"] = api_key
 
         print("Creating embeddings...")
-        # Create embeddings
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        # Create embeddings with explicit API key
+        embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-small",
+            openai_api_key=api_key
+        )
 
         # Convert sample documents to LangChain documents
         documents = [
@@ -112,8 +115,12 @@ def initialize_rag_system():
         vector_store = FAISS.from_documents(split_docs, embeddings)
 
         print("Creating LLM...")
-        # Create LLM
-        llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        # Create LLM with explicit API key
+        llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            openai_api_key=api_key
+        )
 
         print("Creating QA chain...")
         # Create QA chain
