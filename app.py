@@ -16,6 +16,7 @@ app = FastAPI(title="LangChain RAG Demo", version="1.0.0")
 # Global variables to hold our RAG components
 vector_store = None
 qa_chain = None
+initialization_error = None
 
 # Get OpenAI API key from AWS Secrets Manager or environment
 def get_openai_api_key():
@@ -79,7 +80,7 @@ SAMPLE_DOCUMENTS = [
 
 def initialize_rag_system():
     """Initialize the RAG system with vector store and QA chain"""
-    global vector_store, qa_chain
+    global vector_store, qa_chain, initialization_error
 
     try:
         # Get API key
@@ -89,6 +90,7 @@ def initialize_rag_system():
 
         os.environ["OPENAI_API_KEY"] = api_key
 
+        print("Creating embeddings...")
         # Create embeddings
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
@@ -105,12 +107,15 @@ def initialize_rag_system():
         )
         split_docs = text_splitter.split_documents(documents)
 
+        print(f"Creating vector store with {len(split_docs)} document chunks...")
         # Create vector store
         vector_store = FAISS.from_documents(split_docs, embeddings)
 
+        print("Creating LLM...")
         # Create LLM
         llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
+        print("Creating QA chain...")
         # Create QA chain
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
@@ -120,10 +125,15 @@ def initialize_rag_system():
         )
 
         print("RAG system initialized successfully!")
+        initialization_error = None
         return True
 
     except Exception as e:
-        print(f"Error initializing RAG system: {e}")
+        error_msg = f"Error initializing RAG system: {type(e).__name__}: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        initialization_error = error_msg
         return False
 
 # Request/Response models
@@ -168,7 +178,8 @@ async def health_check():
                 "status": "unhealthy",
                 "message": "RAG system not initialized",
                 "has_api_key": has_key,
-                "api_key_prefix": api_key[:10] + "..." if api_key else None
+                "api_key_prefix": api_key[:10] + "..." if api_key else None,
+                "error": initialization_error
             }
         )
     return {"status": "healthy", "rag_initialized": True}
