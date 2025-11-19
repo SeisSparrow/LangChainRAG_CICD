@@ -115,6 +115,13 @@ resource "aws_iam_policy" "github_actions_policy" {
             "iam:AWSServiceName" = "apprunner.amazonaws.com"
           }
         }
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "secretsmanager:DescribeSecret"
+        ],
+        Resource = aws_secretsmanager_secret.openai_key.arn
       }
     ]
   })
