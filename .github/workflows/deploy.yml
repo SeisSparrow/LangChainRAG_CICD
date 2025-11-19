@@ -84,12 +84,52 @@ jobs:
           port: 8080
           wait-for-service-stability-seconds: 600
           instance-role-arn: ${{ steps.get-roles.outputs.instance-role-arn }}
-          copy-env-vars: |
-            OPENAI_API_KEY
-          copy-secret-env-vars: |
-            - OPENAI_API_KEY=bee-edu-openai-key-secret
 
-      # Step 7: Output the service URL
+      # Step 7: Configure Secrets Manager integration
+      - name: Update service with Secrets Manager
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          # Get AWS Account ID
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS Account ID: $AWS_ACCOUNT_ID"
+
+          # Get the service ARN
+          SERVICE_ARN=$(aws apprunner list-services --region ${AWS_REGION} --query 'ServiceSummaryList[?ServiceName==`bee-edu-rag-service`].ServiceArn' --output text)
+          echo "Service ARN: $SERVICE_ARN"
+
+          # Get the full secret ARN (including the suffix)
+          SECRET_ARN=$(aws secretsmanager describe-secret --secret-id bee-edu-openai-key-secret --region ${AWS_REGION} --query 'ARN' --output text)
+          echo "Secret ARN: $SECRET_ARN"
+
+          # Update the service to include Secrets Manager secret
+          aws apprunner update-service \
+            --service-arn $SERVICE_ARN \
+            --region ${AWS_REGION} \
+            --source-configuration "{
+              \"ImageRepository\": {
+                \"ImageConfiguration\": {
+                  \"Port\": \"8080\",
+                  \"RuntimeEnvironmentSecrets\": {
+                    \"OPENAI_API_KEY\": \"${SECRET_ARN}\"
+                  }
+                },
+                \"ImageIdentifier\": \"${{ steps.build-image.outputs.image }}\",
+                \"ImageRepositoryType\": \"ECR\"
+              },
+              \"AuthenticationConfiguration\": {
+                \"AccessRoleArn\": \"${{ steps.get-roles.outputs.access-role-arn }}\"
+              }
+            }" \
+            --instance-configuration "{
+              \"Cpu\": \"1024\",
+              \"Memory\": \"2048\",
+              \"InstanceRoleArn\": \"${{ steps.get-roles.outputs.instance-role-arn }}\"
+            }"
+
+          echo "Service updated with Secrets Manager configuration"
+
+      # Step 8: Output the service URL
       - name: App Runner URL
         run: |
           echo "App Runner Service URL: ${{ steps.deploy-apprunner.outputs.service-url }}"
